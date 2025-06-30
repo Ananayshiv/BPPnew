@@ -1,6 +1,7 @@
 import numpy as np
 import plotly.graph_objects as go
-from typing import List, Tuple, Optional, Set
+from typing import List, Tuple, Optional, Set, Dict
+from collections import defaultdict
 
 class Item:
     def __init__(self, dimensions: Tuple[float, ...]):
@@ -16,11 +17,24 @@ class Item:
         
     def generate_rotations(self) -> List[Tuple[float, float, float]]:
         l, w, h = self.original_dim
-        return [
-            (l, w, h), (l, h, w),
-            (w, l, h), (w, h, l),
-            (h, l, w), (h, w, l)
-        ]
+        unique_rotations = set()
+        
+        # Only consider rotations where height is the smallest dimension (for better stacking)
+        if h <= l and h <= w:
+            unique_rotations.add((l, w, h))
+            unique_rotations.add((w, l, h))
+        if l <= h and l <= w:
+            unique_rotations.add((h, w, l))
+            unique_rotations.add((w, h, l))
+        if w <= h and w <= l:
+            unique_rotations.add((l, h, w))
+            unique_rotations.add((h, l, w))
+            
+        # If all dimensions are equal, just use one rotation
+        if l == w == h:
+            return [(l, w, h)]
+            
+        return list(unique_rotations)
         
     @property
     def volume(self) -> float:
@@ -60,12 +74,22 @@ class PlacedItem:
             (x + l, y + w, z),
             (x, y + w, z)
         ]
-
+    
+    def top_face(self) -> List[Tuple[float, float, float]]:
+        x, y, z = self.corner
+        l, w, h = self.dimensions
+        return [
+            (x, y, z + h),
+            (x + l, y, z + h),
+            (x + l, y + w, z + h),
+            (x, y + w, z + h)
+        ]
 class Bin:
     def __init__(self, size: Tuple[float, float, float]):
         self.size = size
         self.items: List[PlacedItem] = []
-        self.extreme_points: Set[Tuple[float, float, float]] = {(0, 0, 0)}
+        self.candidate_positions: Set[Tuple[float, float, float]] = {(0, 0, 0)}
+        self.height_map = defaultdict(float)  # Tracks the highest point at each (x,y) coordinate
         
     @staticmethod
     def overlaps(corner1: Tuple[float, float, float], dim1: Tuple[float, float, float],
@@ -145,51 +169,87 @@ class Bin:
             
         return False
         
-    def add_extreme_points(self, new_item: PlacedItem):
+    def update_height_map(self, new_item: PlacedItem):
         x, y, z = new_item.corner
         l, w, h = new_item.dimensions
-        top_z = z + h
         
-        # Add top face corners
-        self.extreme_points.add((x, y, top_z))
-        self.extreme_points.add((x + l, y, top_z))
-        self.extreme_points.add((x, y + w, top_z))
-        self.extreme_points.add((x + l, y + w, top_z))
+        # Update height map for the item's footprint
+        for xi in np.arange(x, x + l, l/10):
+            for yi in np.arange(y, y + w, w/10):
+                self.height_map[(round(xi, 2), round(yi, 2))] = max(self.height_map.get((round(xi, 2), round(yi, 2)), 0), z + h)
+
         
-        # Add center of top face
-        self.extreme_points.add((x + l/2, y + w/2, top_z))
+    def get_best_candidate_position(self, dims: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        """Find the best position considering height and proximity to walls"""
+        best_pos = None
+        best_score = float('inf')
+        
+        l, w, h = dims
+        
+        for candidate in sorted(self.candidate_positions, key=lambda c: (c[2], c[0] + c[1])):
+            x, y, z = candidate
+            
+            # Skip positions that would extend beyond bin boundaries
+            if x + l > self.size[0] or y + w > self.size[1]:
+                continue
+                
+            # Calculate a score based on height and distance to walls
+            height_score = z
+            wall_score = min(x, self.size[0] - (x + l)) + min(y, self.size[1] - (y + w))
+            total_score = height_score * 0.7 + wall_score * 0.3
+            
+            if total_score < best_score:
+                best_score = total_score
+                best_pos = (x, y, z)
+        
+        return best_pos if best_pos is not None else (0, 0, 0)
         
     def try_place_item(self, item: Item, min_support: float = 0.7) -> bool:
-        # Try all rotations
-        for rotation in item.rotations:
-            # Try all extreme points
-            for point in sorted(self.extreme_points, key=lambda p: (p[2], p[0], p[1])):
-                x, y, z_base = point
-                candidate_corner = (x, y, z_base)
+        # Try all rotations in order of increasing height (better for stacking)
+        for rotation in sorted(item.rotations, key=lambda r: r[2]):
+            # Get dimensions for this rotation
+            l, w, h = rotation
+            
+            # Find the best candidate position for this rotation
+            candidate = self.get_best_candidate_position(rotation)
+            if candidate is None:
+                continue
                 
-                # Skip invalid positions
-                if not self.within_bin(candidate_corner, rotation):
-                    continue
-                    
-                # Check overlaps with existing items
-                overlaps = False
-                for placed_item in self.items:
-                    if self.overlaps(candidate_corner, rotation, 
-                                    placed_item.corner, placed_item.dimensions):
-                        overlaps = True
-                        break
-                if overlaps:
-                    continue
-                    
-                # Check stability
-                if not self.check_stability(candidate_corner, rotation, min_support):
-                    continue
-                    
-                # Place the item
-                placed = PlacedItem(candidate_corner, rotation)
-                self.items.append(placed)
-                self.add_extreme_points(placed)
-                return True
+            x, y, z = candidate
+            candidate_corner = (x, y, z)
+            
+            # Skip invalid positions
+            if not self.within_bin(candidate_corner, rotation):
+                continue
+                
+            # Check overlaps with existing items
+            overlaps = False
+            for placed_item in self.items:
+                if self.overlaps(candidate_corner, rotation, 
+                                placed_item.corner, placed_item.dimensions):
+                    overlaps = True
+                    break
+            if overlaps:
+                continue
+                
+            # Check stability
+            if not self.check_stability(candidate_corner, rotation, min_support):
+                continue
+                
+            # Place the item
+            placed = PlacedItem(candidate_corner, rotation)
+            self.items.append(placed)
+            
+            # Update candidate positions
+            self.candidate_positions.discard(candidate)
+            self.candidate_positions.add((x, y, z + h))  # Top of the new item
+            self.candidate_positions.add((x + l, y, z))  # Right side
+            self.candidate_positions.add((x, y + w, z))  # Front side
+            
+            # Update height map
+            self.update_height_map(placed)
+            
+            return True
                 
         return False
         
@@ -209,41 +269,40 @@ def extreme_point_bin_packing(
 ) -> List[Bin]:
     bins: List[Bin] = []
     
-    # Preprocess items
+    # Preprocess and sort items by volume (largest first)
     items = []
     for element in items_data:
         if isinstance(element, (tuple, list, np.ndarray)):
             if len(element) == 2:
                 centroid, dim = element
-            elif len(element) == 6:  # Flat array
+            elif len(element) == 6:
                 centroid, dim = element[:3], element[3:]
             else:
                 raise ValueError(f"Invalid item format: {element}")
         else:
             raise ValueError(f"Invalid item type: {type(element)}")
         
-        # Convert to list and handle various dimension lengths
         dim_list = list(dim)
         if len(dim_list) == 1:
-            dim_list = [dim_list[0]] * 3  # Make cube
+            dim_list = [dim_list[0]] * 3
         elif len(dim_list) == 2:
             dim_list.append(default_height)
         elif len(dim_list) > 3:
-            dim_list = dim_list[:3]  # Take first 3 elements
+            dim_list = dim_list[:3]
         
         items.append(Item(tuple(dim_list)))
     
-    # Pack items using extreme point heuristic
+    # Sort items by volume descending
+    items.sort(key=lambda x: x.volume, reverse=True)
+    
+    # Pack items
     for item in items:
         placed = False
-        
-        # Try existing bins
         for bin in bins:
             if bin.try_place_item(item, min_support):
                 placed = True
                 break
                 
-        # Create new bin if needed
         if not placed:
             new_bin = Bin(bin_size)
             if new_bin.try_place_item(item, min_support):
@@ -253,74 +312,11 @@ def extreme_point_bin_packing(
                 
     return bins
 
-def visualize_bins(bins: List[Bin]):
-    if not bins:
-        print("No bins to visualize")
-        return
-        
-    fig = go.Figure()
-    colors = ['blue', 'red', 'green', 'orange', 'purple', 'yellow', 'cyan', 'magenta']
-    
-    for bin_idx, bin in enumerate(bins):
-        for item_idx, item in enumerate(bin.items):
-            corners = item.corners()
-            x = [c[0] for c in corners]
-            y = [c[1] for c in corners]
-            z = [c[2] for c in corners]
-            
-            i = [0, 0, 0, 0, 7, 4, 4, 6, 4, 0, 3, 6]
-            j = [1, 2, 3, 4, 6, 5, 6, 5, 0, 1, 7, 3]
-            k = [2, 3, 4, 1, 5, 7, 0, 7, 5, 5, 2, 2]
-            
-            fig.add_trace(go.Mesh3d(
-                x=x, y=y, z=z,
-                i=i, j=j, k=k,
-                color=colors[(bin_idx * len(bin.items) + item_idx) % len(colors)],
-                opacity=0.8,
-                name=f'Bin {bin_idx+1}-Item {item_idx+1}',
-                showlegend=True
-            ))
-    
-    # Draw bin frames
-    for bin_idx, bin in enumerate(bins):
-        x = [0, bin.size[0], bin.size[0], 0, 0, bin.size[0], bin.size[0], 0]
-        y = [0, 0, bin.size[1], bin.size[1], 0, 0, bin.size[1], bin.size[1]]
-        z = [0, 0, 0, 0, bin.size[2], bin.size[2], bin.size[2], bin.size[2]]
-        
-        edges = [
-            (0,1), (1,2), (2,3), (3,0),
-            (4,5), (5,6), (6,7), (7,4),
-            (0,4), (1,5), (2,6), (3,7)
-        ]
-        
-        for edge in edges:
-            fig.add_trace(go.Scatter3d(
-                x=[x[edge[0]], x[edge[1]]],
-                y=[y[edge[0]], y[edge[1]]],
-                z=[z[edge[0]], z[edge[1]]],
-                mode='lines',
-                line=dict(color='black', width=2),
-                showlegend=False
-            ))
-    
-    max_dim = max(max(bin.size) for bin in bins) if bins else 1
-    fig.update_layout(
-        scene=dict(
-            xaxis=dict(title='X', range=[0, max_dim]),
-            yaxis=dict(title='Y', range=[0, max_dim]),
-            zaxis=dict(title='Z', range=[0, max_dim]),
-            aspectmode='cube'
-        ),
-        title='3D Bin Packing Visualization',
-        legend_title="Items per Bin"
-    )
-    fig.show()
+
 
 # Sample usage
 if __name__ == "__main__":
-    # Sample data with centroids and dimensions
     data = [
-        # Format: (centroid, dimensions)
         ([0.35, 0.5, 0.075], [0.4, 0.1, 0.15]),
         ([0.35, 0.625, 0.075], [0.4, 0.15, 0.15]),
         ([0.775, 0.625, 0.25], [0.45, 0.15, 0.5]),
@@ -348,6 +344,4 @@ if __name__ == "__main__":
             print(f"  Item {j+1}:")
             print(f"    Corner: {item.corner}")
             print(f"    Dimensions: {item.dimensions}")
-            print(f"    Centroid: {item.centroid}")
     
-    visualize_bins(bins)
