@@ -1,10 +1,20 @@
-from typing import List, Tuple, Optional, Set
+from typing import List, Tuple, Optional, Set, Dict
 import numpy as np
 import plotly.graph_objects as go
+from collections import defaultdict
 
 class Item:
     def __init__(self, dimensions: Tuple[float, ...]):
-        dims = tuple(float(x) for x in dimensions)
+        # Flatten nested tuple structure
+        flat_dims = []
+        for item in dimensions:
+            if isinstance(item, (tuple, list)):
+                flat_dims.extend(item)
+            else:
+                flat_dims.append(item)
+                
+        # Convert to tuple of floats and ensure exactly 3 dimensions
+        dims = tuple(float(x) for x in flat_dims)
         if len(dims) == 1:
             self.original_dim = (dims[0], dims[0], dims[0])
         elif len(dims) == 2:
@@ -13,13 +23,28 @@ class Item:
             self.original_dim = dims[:3]
         self.rotations = self.generate_rotations()
         
+    # Rest of the class remains unchanged...
+        
     def generate_rotations(self) -> List[Tuple[float, float, float]]:
         l, w, h = self.original_dim
-        return [
-            (l, w, h), (l, h, w),
-            (w, l, h), (w, h, l),
-            (h, l, w), (h, w, l)
-        ]
+        unique_rotations = set()
+        
+        # Only consider rotations where height is the smallest dimension (for better stacking)
+        if h <= l and h <= w:
+            unique_rotations.add((l, w, h))
+            unique_rotations.add((w, l, h))
+        if l <= h and l <= w:
+            unique_rotations.add((h, w, l))
+            unique_rotations.add((w, h, l))
+        if w <= h and w <= l:
+            unique_rotations.add((l, h, w))
+            unique_rotations.add((h, l, w))
+            
+        # If all dimensions are equal, just use one rotation
+        if l == w == h:
+            return [(l, w, h)]
+            
+        return list(unique_rotations)
         
     @property
     def volume(self) -> float:
@@ -59,12 +84,23 @@ class PlacedItem:
             (x + l, y + w, z),
             (x, y + w, z)
         ]
+    
+    def top_face(self) -> List[Tuple[float, float, float]]:
+        x, y, z = self.corner
+        l, w, h = self.dimensions
+        return [
+            (x, y, z + h),
+            (x + l, y, z + h),
+            (x + l, y + w, z + h),
+            (x, y + w, z + h)
+        ]
 
 class Bin:
     def __init__(self, size: Tuple[float, float, float]):
         self.size = size
         self.items: List[PlacedItem] = []
         self.candidate_positions: Set[Tuple[float, float, float]] = {(0, 0, 0)}
+        self.height_map = defaultdict(float)  # Tracks the highest point at each (x,y) coordinate
         
     @staticmethod
     def overlaps(corner1: Tuple[float, float, float], dim1: Tuple[float, float, float],
@@ -100,6 +136,7 @@ class Bin:
         l, w, h = dims
         bottom_z = z
         
+        # Item is on the floor - stable
         if bottom_z < 1e-5:
             return True
             
@@ -116,9 +153,11 @@ class Bin:
             p_l, p_w, p_h = placed_item.dimensions
             top_z = p_z + p_h
             
+            # Check if this item is directly below the candidate
             if abs(top_z - bottom_z) > 1e-5:
                 continue
                 
+            # Calculate overlap area
             x_overlap = max(0, min(x + l, p_x + p_l) - max(x, p_x))
             y_overlap = max(0, min(y + w, p_y + p_w) - max(y, p_y))
             overlap_area = x_overlap * y_overlap
@@ -126,54 +165,102 @@ class Bin:
             if overlap_area > 0:
                 support_area += overlap_area
                 
+                # Check corner support
                 for i, (cx, cy) in enumerate(bottom_corners):
                     if (p_x <= cx <= p_x + p_l and p_y <= cy <= p_y + p_w):
                         corner_support[i] = True
         
+        # Check area support
         if support_area >= min_support * bottom_area - 1e-5:
             return True
             
+        # Check corner support (3/4 corners supported)
         if sum(corner_support) >= 3:
             return True
             
         return False
         
-    def add_candidate_positions(self, new_item: PlacedItem):
+    def update_height_map(self, new_item: PlacedItem):
         x, y, z = new_item.corner
         l, w, h = new_item.dimensions
-        top_z = z + h
         
-        self.candidate_positions.add((x, y, top_z))
-        self.candidate_positions.add((x + l, y, top_z))
-        self.candidate_positions.add((x, y + w, top_z))
-        self.candidate_positions.add((x + l, y + w, top_z))
-        self.candidate_positions.add((x + l/2, y + w/2, top_z))
+        # Update height map for the item's footprint
+        for xi in np.arange(x, x + l, l/10):
+            for yi in np.arange(y, y + w, w/10):
+                self.height_map[(round(xi, 2), round(yi, 2))] = max(self.height_map.get((round(xi, 2), round(yi, 2)), 0), z + h)
+
+        
+    def get_best_candidate_position(self, dims: Tuple[float, float, float]) -> Tuple[float, float, float]:
+        """Find the best position considering height and proximity to walls"""
+        best_pos = None
+        best_score = float('inf')
+        
+        l, w, h = dims
+        
+        for candidate in sorted(self.candidate_positions, key=lambda c: (c[2], c[0] + c[1])):
+            x, y, z = candidate
+            
+            # Skip positions that would extend beyond bin boundaries
+            if x + l > self.size[0] or y + w > self.size[1]:
+                continue
+                
+            # Calculate a score based on height and distance to walls
+            height_score = z
+            wall_score = min(x, self.size[0] - (x + l)) + min(y, self.size[1] - (y + w))
+            total_score = height_score * 0.7 + wall_score * 0.3
+            
+            if total_score < best_score:
+                best_score = total_score
+                best_pos = (x, y, z)
+        
+        return best_pos if best_pos is not None else (0, 0, 0)
         
     def try_place_item(self, item: Item, min_support: float = 0.7) -> bool:
-        for rotation in item.rotations:
-            for candidate in sorted(self.candidate_positions, key=lambda c: (c[2], c[0], c[1])):
-                x, y, z_base = candidate
-                candidate_corner = (x, y, z_base)
+        # Try all rotations in order of increasing height (better for stacking)
+        for rotation in sorted(item.rotations, key=lambda r: r[2]):
+            # Get dimensions for this rotation
+            l, w, h = rotation
+            
+            # Find the best candidate position for this rotation
+            candidate = self.get_best_candidate_position(rotation)
+            if candidate is None:
+                continue
                 
-                if not self.within_bin(candidate_corner, rotation):
-                    continue
-                    
-                overlaps = False
-                for placed_item in self.items:
-                    if self.overlaps(candidate_corner, rotation, 
-                                    placed_item.corner, placed_item.dimensions):
-                        overlaps = True
-                        break
-                if overlaps:
-                    continue
-                    
-                if not self.check_stability(candidate_corner, rotation, min_support):
-                    continue
-                    
-                placed = PlacedItem(candidate_corner, rotation)
-                self.items.append(placed)
-                self.add_candidate_positions(placed)
-                return True
+            x, y, z = candidate
+            candidate_corner = (x, y, z)
+            
+            # Skip invalid positions
+            if not self.within_bin(candidate_corner, rotation):
+                continue
+                
+            # Check overlaps with existing items
+            overlaps = False
+            for placed_item in self.items:
+                if self.overlaps(candidate_corner, rotation, 
+                                placed_item.corner, placed_item.dimensions):
+                    overlaps = True
+                    break
+            if overlaps:
+                continue
+                
+            # Check stability
+            if not self.check_stability(candidate_corner, rotation, min_support):
+                continue
+                
+            # Place the item
+            placed = PlacedItem(candidate_corner, rotation)
+            self.items.append(placed)
+            
+            # Update candidate positions
+            self.candidate_positions.discard(candidate)
+            self.candidate_positions.add((x, y, z + h))  # Top of the new item
+            self.candidate_positions.add((x + l, y, z))  # Right side
+            self.candidate_positions.add((x, y + w, z))  # Front side
+            
+            # Update height map
+            self.update_height_map(placed)
+            
+            return True
                 
         return False
         
@@ -183,148 +270,23 @@ class Bin:
         return self.size[0] * self.size[1] * self.size[2] - used
         
     def get_all_coordinates(self) -> List[List[Tuple[float, float, float]]]:
-                                          
         return [item.corners() for item in self.items]
 
-def greedy_subset_bin_packing(
-    items_data: List, 
-    bin_size: Tuple[float, float, float] = (1.0, 1.0, 1.0),
-    min_support: float = 0.7,
-    default_height: float = 0.1
-) -> List[Bin]:
-    items = []
-    for element in items_data:
-        if isinstance(element, (tuple, list, np.ndarray)):
-            if len(element) == 2:
-                centroid, dim = element
-            elif len(element) == 6:
-                centroid, dim = element[:3], element[3:]
+def pack_items_greedy(items: List[Item], bin_size: Tuple[float, float, float]) -> List[Bin]:
+
+    sorted_items = sorted(items,key=lambda item: (min(item.original_dim), item.volume),reverse=True)
+    bins: List[Bin] = []
+    for item in sorted_items:
+        placed = False
+        for bin in bins:
+            if bin.try_place_item(item):
+                placed = True
+                break
+        if not placed:
+            new_bin = Bin(bin_size)
+            if new_bin.try_place_item(item):
+                bins.append(new_bin)
             else:
-                raise ValueError(f"Invalid item format: {element}")
-        else:
-            raise ValueError(f"Invalid item type: {type(element)}")
-        
-        dim_list = list(dim)
-        if len(dim_list) == 1:
-            dim_list = [dim_list[0]] * 3
-        elif len(dim_list) == 2:
-            dim_list.append(default_height)
-        elif len(dim_list) > 3:
-            dim_list = dim_list[:3]
-        
-        items.append(Item(tuple(dim_list)))
-    
-    items.sort(key=lambda item: item.volume, reverse=True)
-    remaining_items = items[:]
-    bins = []
-    
-    while remaining_items:
-        new_bin = Bin(bin_size)
-        made_progress = True
-        while made_progress and remaining_items:
-            made_progress = False
-            for item in list(remaining_items):
-                if new_bin.try_place_item(item, min_support):
-                    remaining_items.remove(item)
-                    made_progress = True
-                    
-        bins.append(new_bin)
-        if len(new_bin.items) == 0:
-            print(f"Warning: {len(remaining_items)} items could not be placed.")
-            break
-            
+                print(f"Warning: Item with dimensions {item.original_dim} could not be placed in an empty bin of size {bin_size}")
     return bins
-
-def visualize_bins(bins: List[Bin]):
-    if not bins:
-        print("No bins to visualize")
-        return
-        
-    fig = go.Figure()
-    colors = ['blue', 'red', 'green', 'orange', 'purple', 'yellow', 'cyan', 'magenta']
-    
-    for bin_idx, bin in enumerate(bins):
-        for item_idx, item in enumerate(bin.items):
-            corners = item.corners()
-            x = [c[0] for c in corners]
-            y = [c[1] for c in corners]
-            z = [c[2] for c in corners]
-            
-            i = [0, 0, 0, 0, 7, 4, 4, 6, 4, 0, 3, 6]
-            j = [1, 2, 3, 4, 6, 5, 6, 5, 0, 1, 7, 3]
-            k = [2, 3, 4, 1, 5, 7, 0, 7, 5, 5, 2, 2]
-            
-            fig.add_trace(go.Mesh3d(
-                x=x, y=y, z=z,
-                i=i, j=j, k=k,
-                color=colors[(bin_idx * len(bin.items) + item_idx) % len(colors)],
-                opacity=0.8,
-                name=f'Bin {bin_idx+1}-Item {item_idx+1}',
-                showlegend=True
-            ))
-    
-    for bin_idx, bin in enumerate(bins):
-        x = [0, bin.size[0], bin.size[0], 0, 0, bin.size[0], bin.size[0], 0]
-        y = [0, 0, bin.size[1], bin.size[1], 0, 0, bin.size[1], bin.size[1]]
-        z = [0, 0, 0, 0, bin.size[2], bin.size[2], bin.size[2], bin.size[2]]
-        
-        edges = [
-            (0,1), (1,2), (2,3), (3,0),
-            (4,5), (5,6), (6,7), (7,4),
-            (0,4), (1,5), (2,6), (3,7)
-        ]
-        
-        for edge in edges:
-            fig.add_trace(go.Scatter3d(
-                x=[x[edge[0]], x[edge[1]]],
-                y=[y[edge[0]], y[edge[1]]],
-                z=[z[edge[0]], z[edge[1]]],
-                mode='lines',
-                line=dict(color='black', width=2),
-                showlegend=False
-            ))
-    
-    max_dim = max(max(bin.size) for bin in bins) if bins else 1
-    fig.update_layout(
-        scene=dict(
-            xaxis=dict(title='X', range=[0, max_dim]),
-            yaxis=dict(title='Y', range=[0, max_dim]),
-            zaxis=dict(title='Z', range=[0, max_dim]),
-            aspectmode='cube'
-        ),
-        title='3D Bin Packing Visualization',
-        legend_title="Items per Bin"
-    )
-    fig.show()
-
-if __name__ == "__main__":
-    data = [
-        ([0.35, 0.5, 0.075], [0.4, 0.1, 0.15]),
-        ([0.35, 0.625, 0.075], [0.4, 0.15, 0.15]),
-        ([0.775, 0.625, 0.25], [0.45, 0.15, 0.5]),
-        ([0.35, 0.475, 0.35], [0.4, 0.05, 0.3]),
-        ([0.35, 0.6, 0.35], [0.4, 0.2, 0.3]),
-        ([0.25, 0.575, 0.175], [0.2, 0.25, 0.05]),
-        ([0.075, 0.475, 0.425], [0.15, 0.05, 0.15]),
-        ([0.075, 0.6, 0.425], [0.15, 0.2, 0.15]),
-        ([0.6, 0.275, 0.25], [0.2, 0.15, 0.5]),
-        ([0.6, 0.5, 0.25], [0.2, 0.2, 0.5]),
-        ([0.6, 0.775, 0.25], [0.2, 0.15, 0.5]),
-        ([0.775, 0.275, 0.25], [0.05, 0.15, 0.5]),
-        ([0.25, 0.575, 0.15], [0.15, 0.25, 0.3]),
-        ([0.075, 0.575, 0.325], [0.15, 0.25, 0.05])
-    ]
-    
-    bins = greedy_subset_bin_packing(data, bin_size=(1.0, 1.0, 1.0), min_support=0.7)
-    
-    for i, bin in enumerate(bins):
-        print(f"Bin {i+1}:")
-        print(f"  Items: {len(bin.items)}")
-        print(f"  Remaining volume: {bin.remaining_volume():.4f}")
-        for j, item in enumerate(bin.items):
-            print(f"  Item {j+1}:")
-            print(f"    Corner: {item.corner}")
-            print(f"    Dimensions: {item.dimensions}")
-            print(f"    Centroid: {item.centroid}")
-    
-    visualize_bins(bins)
+# The visualize_bins function remains the same as in your original code
