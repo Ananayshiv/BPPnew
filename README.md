@@ -13,6 +13,5 @@ This project includes implementations of:
 Make sure you have [Conda](https://docs.conda.io/en/latest/) installed (Miniconda or Anaconda).
 
 ## ⚙️ Step 1: Create Conda Environment
-
 conda env create -f environment.yml
 conda activate BPP
