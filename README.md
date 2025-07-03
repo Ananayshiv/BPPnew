@@ -15,8 +15,11 @@ Make sure you have [Conda](https://docs.conda.io/en/latest/) installed (Minicond
 ## ⚙️ Step 1: Create Conda Environment
 
 
-### Step 1: Create Conda Environment
-
 ```bash
 conda env create -f environment.yml
 conda activate BPP
+
+##📥 Step 2: INSTALL THE PACKAGE 
+```bash
+Navigate to the source directory. Use pip to install your package in editable mode:
+pip install -e .
