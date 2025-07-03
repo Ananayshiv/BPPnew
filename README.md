@@ -15,4 +15,8 @@ Make sure you have [Conda](https://docs.conda.io/en/latest/) installed (Minicond
 ## ⚙️ Step 1: Create Conda Environment
 
 
-<pre> ### Step 1: Create Conda Environment ```bash conda env create -f environment.yml conda activate BPP ``` </pre>
+### Step 1: Create Conda Environment
+
+```bash
+conda env create -f environment.yml
+conda activate BPP
