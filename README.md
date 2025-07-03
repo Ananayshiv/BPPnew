@@ -7,3 +7,7 @@ This project includes implementations of:
 - Best Fit
 - Extreme Point heuristic
 - Greedy Subset Sum
+
+
+🛠 Prerequisites
+Make sure you have [Conda](https://docs.conda.io/en/latest/) installed (Miniconda or Anaconda).
