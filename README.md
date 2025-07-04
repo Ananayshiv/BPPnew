@@ -18,11 +18,6 @@ This project contains Python implementations of several popular bin packing heur
 - ✅ Greedy Subset Sum Algorithm
 - ✅ Clean, modular Python code
 
----
-
-#*No space wasted!*  
-
----
 
 ## 🛠 Installation  
 
