@@ -1,25 +1,35 @@
-# BPP - Bin Packing Project
+# 🧊 BPP - Bin Packing Project
 
-The **Bin Packing Problem (BPP)** is a classic optimization problem where items of different sizes must be packed into a minimal number of bins or containers. It has practical applications in logistics, memory allocation, and file backups. Since it's NP-hard, several heuristic algorithms are used to find approximate solutions efficiently.
+The **Bin Packing Problem (BPP)** is a classic NP-hard optimization problem where items of varying sizes must be packed into the fewest number of fixed-capacity bins. This has many real-world applications in:
 
-This project includes implementations of:
-- First Fit
-- Best Fit
-- Extreme Point heuristic
-- Greedy Subset Sum
+- 📦 Logistics & shipping
+- 💾 Memory & disk allocation
+- ☁️ Cloud storage optimization
 
+This project contains Python implementations of several popular bin packing heuristics.
 
-🛠 Prerequisites
-Make sure you have [Conda](https://docs.conda.io/en/latest/) installed (Miniconda or Anaconda).
+---
 
-## ⚙️ Step 1: Create Conda Environment
+## 🚀 Features
 
+- ✅ First Fit Algorithm
+- ✅ Best Fit Algorithm
+- ✅ Extreme Point Heuristic
+- ✅ Greedy Subset Sum Algorithm
+- ✅ Clean, modular Python code
+
+---
+
+## 🛠 Prerequisites
+
+Make sure [Conda](https://docs.conda.io/en/latest/) is installed on your system (Miniconda or Anaconda).
+
+---
+
+## ⚙️ Installation
+
+### 1️⃣ Clone the repository
 
 ```bash
-conda env create -f environment.yml
-conda activate BPP
-
-##📥 Step 2: INSTALL THE PACKAGE 
-```bash
-Navigate to the source directory. Use pip to install your package in editable mode:
-pip install -e .
+git clone https://github.com/your-username/BPP.git
+cd BPP
