@@ -20,16 +20,25 @@ This project contains Python implementations of several popular bin packing heur
 
 ---
 
-## 🛠 Prerequisites
-
-Make sure [Conda](https://docs.conda.io/en/latest/) is installed on your system (Miniconda or Anaconda).
+#*No space wasted!*  
 
 ---
 
-## ⚙️ Installation
+## 🛠 Installation  
 
-### 1️⃣ Clone the repository
+### **Prerequisites**  
+- Python 3.8+  
+- Git (for cloning)  
+- [Conda](https://docs.conda.io/en/latest/) (recommended)  
 
+### 🔧 Step 1: Create a Conda Environment
 ```bash
-git clone https://github.com/your-username/BPP.git
-cd BPP
+conda env create -f environment.yml
+conda activate BPP
+```
+### 📥 Step 2: Install the Package
+Navigate to the source directory. Use pip to install your package in editable mode:
+```bash
+pip install -e .
+```
+
